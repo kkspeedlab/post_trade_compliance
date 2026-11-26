@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.*
+!.env.example
+*.xlsx
+*.xls
+*.csv
+*.pdf
+*.sqlite3
+*.db
+reports/
+orders/
+private/
