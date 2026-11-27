@@ -3,6 +3,7 @@ import json
 import sqlite3
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlsplit
 
 ROOT=Path(__file__).resolve().parents[1]
 DB=ROOT/'private/reconciliation.sqlite3'
@@ -18,9 +19,12 @@ async function load(){try{const r=await fetch('/api/register');if(!r.ok)throw Er
 load()</script></body></html>"""
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path=='/':
+        path=urlsplit(self.path).path
+        if path=='/favicon.ico':
+            self.send_response(204);self.end_headers();return
+        if path=='/':
             data=HTML.encode();kind='text/html; charset=utf-8'
-        elif self.path=='/api/register':
+        elif path=='/api/register':
             try:
                 with sqlite3.connect(DB.as_uri()+'?mode=ro',uri=True) as db:
                     orders=[json.loads(r[0]) for r in db.execute('SELECT payload FROM order_status')]
