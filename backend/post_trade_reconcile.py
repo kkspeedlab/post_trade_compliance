@@ -35,7 +35,9 @@ def read_orders(path):
                 raise ValueError(f'{name} | sheet {s.title} | row {row_number}: Unmapped or missing instrument {instrument!r}; quantity={quantity!r}; side={side!r}')
             yield dict(account=account,bank=bank,day=day,source=name,original=d,instrument=instrument,key=key,side=str(d['Side' if u else 'Stex Order Group']).upper(),quantity=float(d['Quantity (shares)' if u else 'Quantity']))
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--orders',nargs='+',type=Path,required=True);p.add_argument('--history',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--as-of',required=True);p.add_argument('--archive-root',type=Path);a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
+    p=argparse.ArgumentParser();p.add_argument('--orders',nargs='+',type=Path,required=True);p.add_argument('--history',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--as-of',required=True);p.add_argument('--archive-root',type=Path);p.add_argument('--archive',action='store_true');a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
+    if a.archive and (not a.archive_root or not a.archive_root.is_dir()):
+        p.error('--archive requires an existing archive root')
     orders=[o for f in a.orders for o in read_orders(f)]; rows=iter(load_workbook(a.history,read_only=True,data_only=True)['All Trades'].values); h=next(rows); trades=[dict(zip(h,r)) for r in rows]; used=set(); styles=getSampleStyleSheet(); stamp=datetime.now().strftime('%Y_%m_%d_%H.%M.%S')
     def key(o):return(o['bank'],o['account'],o['key'],o['side'])
     counts=Counter((key(o),o['day']) for o in orders)
@@ -63,8 +65,36 @@ def main():
             if existing:
                 print(day,account,'SKIP — existing archived report:',existing.name)
                 continue
+        if a.archive and any(o['status']!='Fully Executed' or o['review'] for o in oo):
+            print(day,account,'DEFER — outstanding or ambiguous orders; use preview mode')
+            continue
         story=[Paragraph('RM-204 | Trade Reconciliation — '+account,styles['Title']),Paragraph('Order date: '+day+' | Report cutoff: '+a.as_of+' | Generated: '+datetime.now().strftime('%d/%m/%Y %H:%M:%S'),styles['Normal']),Spacer(1,12),Paragraph('1. Original order instructions',styles['Heading2'])]
         for bank,source in sorted(set((o['bank'],o['source']) for o in oo)):
             bb=[o for o in oo if o['bank']==bank and o['source']==source]; headers=list(bb[0]['original']);story.extend([Paragraph(bank+' | '+escape(bb[0]['source']),styles['Heading3']),table([headers]+[[o['original'].get(h) for h in headers] for o in bb],[740/len(headers)]*len(headers)),Spacer(1,12)])
-        story.extend([PageBreak(),Paragraph('2. Post-trade results — '+account,styles['Heading2']),Paragraph('Bank evidence: '+escape(a.history.name),styles['Normal']),Spacer(1,10),table([['Bank','Order date','Instrument','Ordered','Executed','Outstanding','Status','Review']]+[[o['bank'],o['day'],o['instrument'],o['quantity'],o['executed'],o['quantity']-o['executed'],o['status'],o['review']] for o in oo],[45,65,100,55,55,65,100,255]),Spacer(1,12),Paragraph('Individual bank execution evidence',styles['Heading3'])]); fields=['Bank','ISIN','Trade Date','Reporting Date','Settlement Date','Buy/Sell','Quantity','Price','Price Currency','Trade Reference'];story.append(table([fields]+[[t[f] for f in fields] for o in oo for t in o['matches']],[45,100,70,70,75,45,55,60,55,165]));story.append(Paragraph('Settlement dates are bank-reported; independent settlement confirmation is not inferred. Matching uses bank, account, instrument, side and dates, not a shared order ID.',styles['BodyText']));folder=a.output/day;folder.mkdir(parents=True,exist_ok=True);out=folder/f'{account}_Trade_Reconciliation_{stamp}.pdf';SimpleDocTemplate(str(out),pagesize=landscape(A4),leftMargin=40,rightMargin=40,topMargin=35,bottomMargin=35).build(story);print(day,account,len(oo),Counter(o['status'] for o in oo),out)
+        story.extend([PageBreak(),Paragraph('2. Post-trade results — '+account,styles['Heading2']),Paragraph('Bank evidence: '+escape(a.history.name),styles['Normal']),Spacer(1,10),table([['Bank','Order date','Instrument','Ordered','Executed','Outstanding','Status','Review']]+[[o['bank'],o['day'],o['instrument'],o['quantity'],o['executed'],o['quantity']-o['executed'],o['status'],o['review']] for o in oo],[45,65,100,55,55,65,100,255]),Spacer(1,12),Paragraph('Individual bank execution evidence',styles['Heading3'])]); fields=['Bank','ISIN','Trade Date','Reporting Date','Settlement Date','Buy/Sell','Quantity','Price','Price Currency','Trade Reference'];story.append(table([fields]+[[t[f] for f in fields] for o in oo for t in o['matches']],[45,100,70,70,75,45,55,60,55,165]));story.append(Paragraph('Settlement dates are bank-reported; independent settlement confirmation is not inferred. Matching uses bank, account, instrument, side and dates, not a shared order ID.',styles['BodyText']));folder=a.output/day;folder.mkdir(parents=True,exist_ok=True);out=folder/f'{account}_Trade_Reconciliation_{stamp}.pdf';SimpleDocTemplate(str(out),pagesize=landscape(A4),leftMargin=40,rightMargin=40,topMargin=35,bottomMargin=35).build(story)
+        if a.archive:
+            import shutil
+            import time
+            month=datetime.fromisoformat(day)
+            month_name=month.strftime('%Y-%m-')+'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split()[month.month-1]
+            target=a.archive_root/month_name/'Trade Reconciliation'/account
+            target.mkdir(parents=True,exist_ok=True)
+            # Keep approved naming convention and never overwrite an archived PDF.
+            while True:
+                dest=target/f"{account}_Trade_Reconciliation_{datetime.now().strftime('%Y_%m_%d_%H.%M.%S')}.pdf"
+                try:
+                    handle=dest.open('xb')
+                except FileExistsError:
+                    time.sleep(1)
+                    continue
+                try:
+                    with handle, out.open('rb') as source:
+                        shutil.copyfileobj(source,handle)
+                except Exception:
+                    dest.unlink(missing_ok=True)
+                    raise
+                break
+            print(day,account,'ARCHIVED',dest)
+        else:
+            print(day,account,len(oo),Counter(o['status'] for o in oo),out)
 if __name__=='__main__':main()
