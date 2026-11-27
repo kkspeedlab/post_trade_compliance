@@ -11,23 +11,26 @@ from urllib.parse import urlsplit
 
 ROOT=Path(__file__).resolve().parents[1]
 DB=ROOT/'private/reconciliation.sqlite3'
+RESTRICTIONS_DB=ROOT/'private/investment_restrictions.sqlite3'
 TOKEN=secrets.token_urlsafe(32)
 HTML="""<!doctype html><html><head><meta charset="utf-8"><title>RM-204 Post-Trade Compliance</title><style>
 body{font:15px system-ui;background:#f4f6f9;color:#203047;margin:32px}section{background:white;padding:20px;margin:18px 0;border:1px solid #dce2ea;border-radius:8px}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:9px;border-bottom:1px solid #ddd}button{padding:9px 16px}h1{margin-bottom:4px}small{color:#657184}</style></head><body>
 <small>RM-204 · Investment Controlling</small><h1>Post-Trade Compliance</h1><button onclick="load()">Refresh</button> <button onclick="runRecon(this)">Run Reconciliation</button> <label><input type="checkbox" id="openOnly" onchange="load()"> Outstanding only</label><details><summary>Local source settings</summary><label>Orders folder <input id="ordersRoot" size="90"></label><br><label>Trade history <input id="history" size="90"></label><br><label>Compliance folder <input id="archiveRoot" size="90"></label></details><pre id="log"></pre><p id="status"></p>
 <section><h2>Trade reconciliation</h2><p id="summary"></p><table id="orders"></table></section>
 <section><h2>Report history</h2><table id="reports"></table></section>
-<section><h2>Investment Restrictions</h2><p>Pending implementation.</p></section>
+<section><h2>Investment Restrictions</h2><label>Allocation folder <input id="allocationRoot" size="75"></label> <button onclick="runRestrictions(this)">Run Investment Restrictions</button><p id="restrictionSummary"></p><table id="restrictionReports"></table></section>
 <script>
 const token='__TOKEN__';
 async function action(payload){const r=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json','X-Local-Token':token},body:JSON.stringify(payload)});const d=await r.json();document.getElementById('log').textContent=d.output;if(!r.ok)throw Error(d.output);await load()}
 async function runRecon(b){b.disabled=true;try{const settings={};for(const k of ['ordersRoot','history','archiveRoot']){settings[k]=document.getElementById(k).value;localStorage.setItem(k,settings[k])}if(!confirm('Run reconciliation and archive completed reports?'))return;await action({action:'run',...settings})}catch(e){document.getElementById('status').textContent=e.message}finally{b.disabled=false}}
 for(const k of ['ordersRoot','history','archiveRoot'])document.getElementById(k).value=localStorage.getItem(k)||'';
+document.getElementById('allocationRoot').value=localStorage.getItem('allocationRoot')||'';
+async function runRestrictions(b){b.disabled=true;try{const allocationRoot=document.getElementById('allocationRoot').value,archiveRoot=document.getElementById('archiveRoot').value;if(!allocationRoot||!archiveRoot)throw Error('Enter allocation and compliance folders');localStorage.setItem('allocationRoot',allocationRoot);localStorage.setItem('archiveRoot',archiveRoot);if(!confirm('Run daily investment restrictions and archive reports?'))return;await action({action:'restrictions',allocationRoot,archiveRoot})}catch(e){document.getElementById('status').textContent=e.message}finally{b.disabled=false}}
 async function closeOrder(id){const reason=prompt('Closure reason (optional). Cancel to abort.');if(reason===null||!confirm('Close remaining quantity without recording execution?'))return;try{await action({action:'close',id,reason})}catch(e){document.getElementById('status').textContent=e.message}}
 function table(id,headers,rows){const t=document.getElementById(id);t.replaceChildren();for(const [i,row] of [headers,...rows].entries()){const tr=t.insertRow();for(const v of row){const c=document.createElement(i?'td':'th');if(v instanceof Node)c.append(v);else c.textContent=v??'';tr.append(c)}}}
-async function load(){try{const r=await fetch('/api/register');if(!r.ok)throw Error(await r.text());const d=await r.json();document.getElementById('summary').textContent=d.orders.length+' orders | '+d.orders.filter(o=>!['Fully Executed','Manually Closed'].includes(o.status)).length+' open';table('orders',['Date','Account','Bank','Instrument','Ordered','Executed','Unexecuted','Status','Order ID','Action'],d.orders.filter(o=>!document.getElementById('openOnly').checked||!['Fully Executed','Manually Closed'].includes(o.status)).map(o=>[o.day,o.account,o.bank,o.instrument,o.quantity,o.executed,o.quantity-o.executed,o.status,o.order_id,closureButton(o)]));table('reports',['Order date','Account','PDF','Available'],d.reports.map(o=>[o.day,o.account,pdfLink(o),o.available?'Yes':'No']));document.getElementById('status').textContent='Register loaded'}catch(e){document.getElementById('status').textContent=e.message}}
+async function load(){try{const r=await fetch('/api/register');if(!r.ok)throw Error(await r.text());const d=await r.json();document.getElementById('summary').textContent=d.orders.length+' orders | '+d.orders.filter(o=>!['Fully Executed','Manually Closed'].includes(o.status)).length+' open';table('orders',['Date','Account','Bank','Instrument','Ordered','Executed','Unexecuted','Status','Order ID','Action'],d.orders.filter(o=>!document.getElementById('openOnly').checked||!['Fully Executed','Manually Closed'].includes(o.status)).map(o=>[o.day,o.account,o.bank,o.instrument,o.quantity,o.executed,o.quantity-o.executed,o.status,o.order_id,closureButton(o)]));table('reports',['Order date','Account','PDF','Available'],d.reports.map(o=>[o.day,o.account,pdfLink(o),o.available?'Yes':'No']));table('restrictionReports',['Valuation date','Account','PDF','Available'],d.restrictions.map(o=>[o.day,o.account,pdfLink(o),o.available?'Yes':'No']));document.getElementById('restrictionSummary').textContent=d.restrictions.length+' registered daily reports';document.getElementById('status').textContent='Register loaded'}catch(e){document.getElementById('status').textContent=e.message}}
 function closureButton(o){const b=document.createElement('button');b.textContent='Close';b.disabled=!['Partially Executed','Not Executed'].includes(o.status)||!!o.review;b.onclick=()=>closeOrder(o.order_id);return b}
-function pdfLink(o){const a=document.createElement('a');a.textContent=o.pdf;if(o.available){a.href='/pdf/'+o.id;a.target='_blank';a.rel='noopener'}return a}
+function pdfLink(o){const a=document.createElement('a');a.textContent=o.pdf;if(o.available){a.href=(o.restriction?'/restriction-pdf/':'/pdf/')+o.id;a.target='_blank';a.rel='noopener'}return a}
 load()</script></body></html>"""
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -41,13 +44,19 @@ class Handler(BaseHTTPRequestHandler):
                 with sqlite3.connect(DB.as_uri()+'?mode=ro',uri=True) as db:
                     orders=[json.loads(r[0]) for r in db.execute('SELECT payload FROM order_status')]
                     reports=[dict(id=i,day=d,account=a,pdf=Path(p).name,available=Path(p).is_file()) for i,d,a,p in db.execute('SELECT rowid,day,account,pdf FROM report_register ORDER BY day DESC,account')]
-                data=json.dumps(dict(orders=orders,reports=reports)).encode();kind='application/json'
+                restrictions=[]
+                if RESTRICTIONS_DB.is_file():
+                    with sqlite3.connect(RESTRICTIONS_DB.as_uri()+'?mode=ro',uri=True) as db:
+                        restrictions=[dict(id=i,day=d,account=a,pdf=Path(p).name,available=Path(p).is_file(),restriction=True) for i,d,a,p in db.execute('SELECT rowid,day,account,pdf FROM reports ORDER BY day DESC,account')]
+                data=json.dumps(dict(orders=orders,reports=reports,restrictions=restrictions)).encode();kind='application/json'
             except Exception as exc:
                 self.send_error(503,'Register unavailable');return
-        elif path.startswith('/pdf/'):
+        elif path.startswith(('/pdf/','/restriction-pdf/')):
             try:
-                with sqlite3.connect(DB.as_uri()+'?mode=ro',uri=True) as db:
-                    row=db.execute('SELECT pdf FROM report_register WHERE rowid=?',(int(path.split('/')[-1]),)).fetchone()
+                restriction=path.startswith('/restriction-pdf/')
+                database=RESTRICTIONS_DB if restriction else DB
+                with sqlite3.connect(database.as_uri()+'?mode=ro',uri=True) as db:
+                    row=db.execute('SELECT pdf FROM reports WHERE rowid=?' if restriction else 'SELECT pdf FROM report_register WHERE rowid=?',(int(path.split('/')[-1]),)).fetchone()
                 file=Path(row[0]);assert file.suffix.lower()=='.pdf';data=file.read_bytes();kind='application/pdf'
             except Exception:
                 self.send_error(404);return
@@ -63,6 +72,8 @@ class Handler(BaseHTTPRequestHandler):
             d=json.loads(self.rfile.read(n))
             if d['action']=='run':
                 args=['backend/run_preview.py','--orders-root',d['ordersRoot'],'--history',d['history'],'--archive-root',d['archiveRoot'],'--archive']
+            elif d['action']=='restrictions':
+                args=['backend/investment_restrictions.py','--allocation-root',d['allocationRoot'],'--archive-root',d['archiveRoot'],'--archive']
             elif d['action']=='close':
                 args=['backend/manage_orders.py','close',d['id'],'--reason='+d.get('reason','')]
             else: raise ValueError('Unknown action')
