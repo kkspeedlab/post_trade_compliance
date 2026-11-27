@@ -35,7 +35,7 @@ def read_orders(path):
                 raise ValueError(f'{name} | sheet {s.title} | row {row_number}: Unmapped or missing instrument {instrument!r}; quantity={quantity!r}; side={side!r}')
             yield dict(source_row=row_number,account=account,bank=bank,day=day,source=name,original=d,instrument=instrument,key=key,side=str(d['Side' if u else 'Stex Order Group']).upper(),quantity=float(d['Quantity (shares)' if u else 'Quantity']))
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--orders',nargs='+',type=Path,required=True);p.add_argument('--history',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--as-of',required=True);p.add_argument('--archive-root',type=Path);p.add_argument('--archive',action='store_true');a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
+    p=argparse.ArgumentParser();p.add_argument('--orders',nargs='*',type=Path,required=True);p.add_argument('--history',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--as-of',required=True);p.add_argument('--archive-root',type=Path);p.add_argument('--archive',action='store_true');a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
     if a.archive and (not a.archive_root or not a.archive_root.is_dir()):
         p.error('--archive requires an existing archive root')
     orders=[o for f in a.orders for o in read_orders(f)]; rows=iter(load_workbook(a.history,read_only=True,data_only=True)['All Trades'].values); h=next(rows); trades=[dict(zip(h,r)) for r in rows]; used=set(); styles=getSampleStyleSheet(); stamp=datetime.now().strftime('%Y_%m_%d_%H.%M.%S')
