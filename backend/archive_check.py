@@ -17,7 +17,7 @@ def archived_report(root, day, account, orders):
         return None
     def compact(s):
         return re.sub(r'\s+', '', str(s)).casefold()
-    paths = sorted(folder.glob(f'{account}_Trade_Reconciliation_*.pdf'))
+    paths = sorted(set(folder.glob(f'{account}_Trade_Reconciliation_*.pdf')) | set((folder / account).glob(f'{account}_Trade_Reconciliation_*.pdf')))
     print('ARCHIVE', day, account, 'candidate PDFs:', len(paths), '|', folder)
     for path in paths:
         try:
