@@ -43,6 +43,7 @@ def main():
     p.add_argument("--as-of", type=date.fromisoformat, default=date.today())
     p.add_argument("--output", type=Path, default=Path("preview_reports"))
     p.add_argument("--list-only", action="store_true")
+    p.add_argument("--archive-root", type=Path)
     a = p.parse_args()
     if not a.orders_root.is_dir() or not a.history.is_file():
         p.error("Order folder or bank history is missing")
@@ -55,9 +56,12 @@ def main():
     # Preview output only; do not use the live compliance archive.
     if any(part.casefold() == "rm-204 investment controlling" for part in a.output.resolve().parts):
         p.error("Preview must not write into the compliance archive")
+    if a.archive_root and not a.archive_root.is_dir():
+        p.error("Compliance archive folder missing")
+    extra = ["--archive-root", str(a.archive_root)] if a.archive_root else []
     subprocess.run([sys.executable, str(Path(__file__).with_name("post_trade_reconcile.py")),
         "--orders", *map(str, files), "--history", str(a.history),
-        "--as-of", a.as_of.isoformat(), "--output", str(a.output)], check=True)
+        "--as-of", a.as_of.isoformat(), "--output", str(a.output), *extra], check=True)
 
 if __name__ == "__main__":
     main()
