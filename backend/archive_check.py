@@ -36,16 +36,13 @@ def archived_report(root, day, account, orders):
         # Require exact execution evidence as well: each reference must appear
         # on a line with the bank-reported quantity and price. Fail closed for
         # older layouts where PDF extraction cannot establish this.
-        lines = raw.splitlines()
+        # ReportLab PDFs extract one cell per line. Match the complete
+        # ordered evidence row, not a physical text line.
+        evidence_text = compact(raw.split('Individual bank execution evidence', 1)[-1])
         def evidence(t):
-            ref = compact(t['Trade Reference'])
-            def numeric(line, value):
-                try:
-                    n = float(value)
-                except (ValueError, TypeError):
-                    return False
-                return any(float(x) == n for x in re.findall(r'(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])', line))
-            return any(ref in compact(line) and numeric(line, t['Quantity']) and numeric(line, t['Price']) for line in lines)
+            fields = ['Bank','ISIN','Trade Date','Reporting Date','Settlement Date',
+                      'Buy/Sell','Quantity','Price','Price Currency','Trade Reference']
+            return compact(''.join(str(t.get(f) if t.get(f) is not None else '') for f in fields)) in evidence_text
         if not all(evidence(t) for o in orders for t in o['matches']):
             continue
         return path
