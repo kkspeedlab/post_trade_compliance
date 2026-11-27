@@ -54,7 +54,9 @@ def main():
     print("Eligible unique workbooks:", len(files), flush=True)
     for f in files:
         print(f, flush=True)
-    if a.list_only or not files:
+    if a.list_only:
+        return
+    if not files and not (a.archive and Path('private/reconciliation.sqlite3').is_file()):
         return
     # Preview output only; do not use the live compliance archive.
     if any(part.casefold() == "rm-204 investment controlling" for part in a.output.resolve().parts):
