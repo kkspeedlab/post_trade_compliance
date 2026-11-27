@@ -40,29 +40,64 @@ def main():
         p.error('--archive requires an existing archive root')
     orders=[o for f in a.orders for o in read_orders(f)]; rows=iter(load_workbook(a.history,read_only=True,data_only=True)['All Trades'].values); h=next(rows); trades=[dict(zip(h,r)) for r in rows]; used=set(); styles=getSampleStyleSheet(); stamp=datetime.now().strftime('%Y_%m_%d_%H.%M.%S')
     def key(o):return(o['bank'],o['account'],o['key'],o['side'])
-    counts=Counter((key(o),o['day']) for o in orders)
-    for o in sorted(orders,key=lambda x:x['day']):
-        siblings=[x for x in orders if x is not o and key(x)==key(o)]
-        later_dates=[x['day'] for x in siblings if x['day']>o['day']]
-        next_day=min(later_dates) if later_dates else None
-        prior_open=any(x['day']<o['day'] and x.get('status')!='Fully Executed' for x in siblings)
-        candidates=[(i,t) for i,t in enumerate(trades) if (t['Bank'],t['Account'],t['ISIN'],t['Buy/Sell'])==key(o) and o['day']<=str(t['Trade Date'])[:10]<=a.as_of and (next_day is None or str(t['Trade Date'])[:10]<next_day) and str(t['Reporting Date'])[:10]<=a.as_of and i not in used]
-        total=sum(abs(float(t['Quantity'])) for i,t in candidates);o['matches']=[];o['review']=''
-        if counts[(key(o),o['day'])]>1 or prior_open or total>o['quantity']:
-            o['review']='Ambiguous or excess execution; manual attribution required'
-        else:
-            o['matches']=[t for i,t in candidates];used.update(i for i,t in candidates)
-        o['executed']=sum(abs(float(t['Quantity'])) for t in o['matches']);o['status']='Fully Executed' if o['executed']==o['quantity'] else 'Partially Executed' if o['executed'] else 'Not Executed'
+    from incremental import Cache, digest
+    cache=Cache(Path('private')/'reconciliation.sqlite3') if a.archive else None
+    current=cache.validate_workbooks(a.orders) if cache else {}
+    groups={}
+    for o in orders:
+        groups.setdefault(key(o),[]).append(o)
+    trade_groups={}
+    for t in trades:
+        if str(t['Trade Date'])[:10]<=a.as_of and str(t['Reporting Date'])[:10]<=a.as_of:
+            trade_groups.setdefault((t['Bank'],t['Account'],t['ISIN'],t['Buy/Sell']),[]).append(t)
+    reused=0; recalculated=0
+    for k,group in groups.items():
+        group=sorted(group,key=lambda x:x['day'])
+        group_trades=trade_groups.get(k,[])
+        fp=digest(['matching-v1',group,group_trades])
+        cached=cache.get(k,fp) if cache else None
+        if cached is not None:
+            for o,result in zip(group,cached):
+                o.update(result)
+            reused+=len(group)
+            continue
+        used=set()
+        counts=Counter((key(o),o['day']) for o in group)
+        for o in group:
+            siblings=[x for x in group if x is not o and key(x)==key(o)]
+            later_dates=[x['day'] for x in siblings if x['day']>o['day']]
+            next_day=min(later_dates) if later_dates else None
+            prior_open=any(x['day']<o['day'] and x.get('status')!='Fully Executed' for x in siblings)
+            candidates=[(i,t) for i,t in enumerate(group_trades) if (t['Bank'],t['Account'],t['ISIN'],t['Buy/Sell'])==key(o) and o['day']<=str(t['Trade Date'])[:10]<=a.as_of and (next_day is None or str(t['Trade Date'])[:10]<next_day) and str(t['Reporting Date'])[:10]<=a.as_of and i not in used]
+            total=sum(abs(float(t['Quantity'])) for i,t in candidates);o['matches']=[];o['review']=''
+            if counts[(key(o),o['day'])]>1 or prior_open or total>o['quantity']:
+                o['review']='Ambiguous or excess execution; manual attribution required'
+            else:
+                o['matches']=[t for i,t in candidates];used.update(i for i,t in candidates)
+            o['executed']=sum(abs(float(t['Quantity'])) for t in o['matches']);o['status']='Fully Executed' if o['executed']==o['quantity'] else 'Partially Executed' if o['executed'] else 'Not Executed'
+        recalculated+=len(group)
+        if cache:
+            cache.put(k,fp,[{f:o[f] for f in ('matches','review','executed','status')} for o in group])
+    print('INCREMENTAL | reused orders:',reused,'| recalculated orders:',recalculated)
+    if cache:
+        cache.save_workbooks(current)
     def para(v):return Paragraph(escape('' if v is None else str(v)),styles['BodyText'])
     def table(rows,widths):
         t=Table([[para(v) for v in r] for r in rows],colWidths=widths,repeatRows=1);t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#dbe5ef')),('VALIGN',(0,0),(-1,-1),'TOP'),('GRID',(0,0),(-1,-1),.3,colors.lightgrey)]));return t
     styles['BodyText'].fontSize=7;styles['BodyText'].leading=9
     for day,account in sorted(set((o['day'],o['account']) for o in orders)):
         oo=[o for o in orders if o['account']==account and o['day']==day]
+        report_fp=digest(['report-v1',oo])
+        if cache:
+            registered=cache.existing(day,account,report_fp)
+            if registered:
+                print(day,account,'SKIP — registered report:',registered.name)
+                continue
         if a.archive_root:
             from archive_check import archived_report
             existing=archived_report(a.archive_root,day,account,oo)
             if existing:
+                if cache: cache.report(day,account,report_fp,existing)
                 print(day,account,'SKIP — existing archived report:',existing.name)
                 continue
         if a.archive and any(o['status']!='Fully Executed' or o['review'] for o in oo):
@@ -94,6 +129,7 @@ def main():
                     dest.unlink(missing_ok=True)
                     raise
                 break
+            if cache: cache.report(day,account,report_fp,dest)
             print(day,account,'ARCHIVED',dest)
         else:
             print(day,account,len(oo),Counter(o['status'] for o in oo),out)
