@@ -20,10 +20,19 @@ def read_orders(path):
         rows=iter(s.values)
         if u: next(rows);next(rows)
         headers=next(rows)
-        for row in rows:
+        for row_number,row in enumerate(rows,start=4 if u else 2):
             if not any(v is not None for v in row): continue
-            d=dict(zip(headers,row)); instrument=str(d['ISIN' if u else 'Asset']).strip().upper(); key=MAP.get(instrument,instrument)
-            if not re.fullmatch(r'[A-Z]{2}[A-Z0-9]{10}',key): raise ValueError('Unmapped instrument '+instrument)
+            d=dict(zip(headers,row))
+            raw=d.get('ISIN' if u else 'Asset')
+            quantity=d.get('Quantity (shares)' if u else 'Quantity')
+            side=d.get('Side' if u else 'Stex Order Group')
+            instrument=str(raw or '').strip().upper()
+            missing=instrument in ('','NONE','N/A')
+            if missing and (quantity is None or str(quantity).strip() in ('','0','0.0')) and not str(side or '').strip():
+                continue
+            key=MAP.get(instrument,instrument)
+            if not re.fullmatch(r'[A-Z]{2}[A-Z0-9]{10}',key):
+                raise ValueError(f'{name} | sheet {s.title} | row {row_number}: Unmapped or missing instrument {instrument!r}; quantity={quantity!r}; side={side!r}')
             yield dict(account=account,bank=bank,day=day,source=name,original=d,instrument=instrument,key=key,side=str(d['Side' if u else 'Stex Order Group']).upper(),quantity=float(d['Quantity (shares)' if u else 'Quantity']))
 def main():
     p=argparse.ArgumentParser();p.add_argument('--orders',nargs='+',type=Path,required=True);p.add_argument('--history',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--as-of',required=True);a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
