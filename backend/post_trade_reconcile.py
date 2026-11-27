@@ -38,11 +38,16 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('--orders',nargs='+',type=Path,required=True);p.add_argument('--history',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--as-of',required=True);a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
     orders=[o for f in a.orders for o in read_orders(f)]; rows=iter(load_workbook(a.history,read_only=True,data_only=True)['All Trades'].values); h=next(rows); trades=[dict(zip(h,r)) for r in rows]; used=set(); styles=getSampleStyleSheet(); stamp=datetime.now().strftime('%Y_%m_%d_%H.%M.%S')
     def key(o):return(o['bank'],o['account'],o['key'],o['side'])
-    counts=Counter(map(key,orders))
-    for o in orders:
-        candidates=[(i,t) for i,t in enumerate(trades) if (t['Bank'],t['Account'],t['ISIN'],t['Buy/Sell'])==key(o) and o['day']<=str(t['Trade Date'])[:10]<=a.as_of and str(t['Reporting Date'])[:10]<=a.as_of and i not in used]
+    counts=Counter((key(o),o['day']) for o in orders)
+    for o in sorted(orders,key=lambda x:x['day']):
+        siblings=[x for x in orders if x is not o and key(x)==key(o)]
+        later_dates=[x['day'] for x in siblings if x['day']>o['day']]
+        next_day=min(later_dates) if later_dates else None
+        prior_open=any(x['day']<o['day'] and x.get('status')!='Fully Executed' for x in siblings)
+        candidates=[(i,t) for i,t in enumerate(trades) if (t['Bank'],t['Account'],t['ISIN'],t['Buy/Sell'])==key(o) and o['day']<=str(t['Trade Date'])[:10]<=a.as_of and (next_day is None or str(t['Trade Date'])[:10]<next_day) and str(t['Reporting Date'])[:10]<=a.as_of and i not in used]
         total=sum(abs(float(t['Quantity'])) for i,t in candidates);o['matches']=[];o['review']=''
-        if counts[key(o)]>1 or total>o['quantity']:o['review']='Ambiguous or excess execution; manual attribution required'
+        if counts[(key(o),o['day'])]>1 or prior_open or total>o['quantity']:
+            o['review']='Ambiguous or excess execution; manual attribution required'
         else:
             o['matches']=[t for i,t in candidates];used.update(i for i,t in candidates)
         o['executed']=sum(abs(float(t['Quantity'])) for t in o['matches']);o['status']='Fully Executed' if o['executed']==o['quantity'] else 'Partially Executed' if o['executed'] else 'Not Executed'
@@ -52,7 +57,7 @@ def main():
     styles['BodyText'].fontSize=7;styles['BodyText'].leading=9
     for account in sorted(set(o['account'] for o in orders)):
         oo=[o for o in orders if o['account']==account]; story=[Paragraph('RM-204 | Trade Reconciliation — '+account,styles['Title']),Paragraph('Report cutoff: '+a.as_of+' | Generated: '+datetime.now().strftime('%d/%m/%Y %H:%M:%S'),styles['Normal']),Spacer(1,12),Paragraph('1. Original order instructions',styles['Heading2'])]
-        for bank in sorted(set(o['bank'] for o in oo)):
-            bb=[o for o in oo if o['bank']==bank]; headers=list(bb[0]['original']);story.extend([Paragraph(bank+' | '+escape(bb[0]['source']),styles['Heading3']),table([headers]+[[o['original'].get(h) for h in headers] for o in bb],[740/len(headers)]*len(headers)),Spacer(1,12)])
-        story.extend([PageBreak(),Paragraph('2. Post-trade results — '+account,styles['Heading2']),Paragraph('Bank evidence: '+escape(a.history.name),styles['Normal']),Spacer(1,10),table([['Bank','Instrument','Ordered','Executed','Outstanding','Status','Review']]+[[o['bank'],o['instrument'],o['quantity'],o['executed'],o['quantity']-o['executed'],o['status'],o['review']] for o in oo],[55,110,65,65,75,110,260]),Spacer(1,12),Paragraph('Individual bank execution evidence',styles['Heading3'])]); fields=['Bank','ISIN','Trade Date','Reporting Date','Settlement Date','Buy/Sell','Quantity','Price','Price Currency','Trade Reference'];story.append(table([fields]+[[t[f] for f in fields] for o in oo for t in o['matches']],[45,100,70,70,75,45,55,60,55,165]));story.append(Paragraph('Settlement dates are bank-reported; independent settlement confirmation is not inferred. Matching uses bank, account, instrument, side and dates, not a shared order ID.',styles['BodyText']));out=a.output/f'{account}_Trade_Reconciliation_{stamp}.pdf';SimpleDocTemplate(str(out),pagesize=landscape(A4),leftMargin=40,rightMargin=40,topMargin=35,bottomMargin=35).build(story);print(account,len(oo),Counter(o['status'] for o in oo),out)
+        for bank,source in sorted(set((o['bank'],o['source']) for o in oo)):
+            bb=[o for o in oo if o['bank']==bank and o['source']==source]; headers=list(bb[0]['original']);story.extend([Paragraph(bank+' | '+escape(bb[0]['source']),styles['Heading3']),table([headers]+[[o['original'].get(h) for h in headers] for o in bb],[740/len(headers)]*len(headers)),Spacer(1,12)])
+        story.extend([PageBreak(),Paragraph('2. Post-trade results — '+account,styles['Heading2']),Paragraph('Bank evidence: '+escape(a.history.name),styles['Normal']),Spacer(1,10),table([['Bank','Order date','Instrument','Ordered','Executed','Outstanding','Status','Review']]+[[o['bank'],o['day'],o['instrument'],o['quantity'],o['executed'],o['quantity']-o['executed'],o['status'],o['review']] for o in oo],[45,65,100,55,55,65,100,255]),Spacer(1,12),Paragraph('Individual bank execution evidence',styles['Heading3'])]); fields=['Bank','ISIN','Trade Date','Reporting Date','Settlement Date','Buy/Sell','Quantity','Price','Price Currency','Trade Reference'];story.append(table([fields]+[[t[f] for f in fields] for o in oo for t in o['matches']],[45,100,70,70,75,45,55,60,55,165]));story.append(Paragraph('Settlement dates are bank-reported; independent settlement confirmation is not inferred. Matching uses bank, account, instrument, side and dates, not a shared order ID.',styles['BodyText']));out=a.output/f'{account}_Trade_Reconciliation_{stamp}.pdf';SimpleDocTemplate(str(out),pagesize=landscape(A4),leftMargin=40,rightMargin=40,topMargin=35,bottomMargin=35).build(story);print(account,len(oo),Counter(o['status'] for o in oo),out)
 if __name__=='__main__':main()
