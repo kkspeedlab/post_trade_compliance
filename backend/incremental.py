@@ -48,3 +48,23 @@ class Cache:
     def existing(self, day, account, fingerprint):
         row = self.db.execute("SELECT pdf FROM report_register WHERE day=? AND account=? AND fingerprint=?", (day, account, fingerprint)).fetchone()
         return Path(row[0]) if row and Path(row[0]).is_file() else None
+
+    def save_orders(self, orders):
+        with self.db:
+            self.db.execute("CREATE TABLE IF NOT EXISTS original_orders (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+            self.db.executemany("INSERT OR IGNORE INTO original_orders VALUES (?,?)", [(o['order_id'],encode(o)) for o in orders])
+    def retained_orders(self, orders, cutoff):
+        self.save_orders(orders)
+        current={o['order_id']:o for o in orders}
+        for oid,payload in self.db.execute("SELECT id,payload FROM original_orders"):
+            o=json.loads(payload)
+            if o['day']<=cutoff:
+                current.setdefault(oid,o)
+        return list(current.values())
+    def save_status(self, orders):
+        with self.db:
+            self.db.execute("CREATE TABLE IF NOT EXISTS order_status (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+            self.db.executemany("INSERT OR REPLACE INTO order_status VALUES (?,?)", [(o['order_id'],encode(o)) for o in orders])
+    def closures(self):
+        self.db.execute("CREATE TABLE IF NOT EXISTS closures (id TEXT PRIMARY KEY, day TEXT NOT NULL, reason TEXT NOT NULL)")
+        return {oid:(day,reason) for oid,day,reason in self.db.execute("SELECT id,day,reason FROM closures")}
