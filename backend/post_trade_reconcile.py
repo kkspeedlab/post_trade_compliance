@@ -33,7 +33,7 @@ def read_orders(path):
             key=MAP.get(instrument,instrument)
             if not re.fullmatch(r'[A-Z]{2}[A-Z0-9]{10}',key):
                 raise ValueError(f'{name} | sheet {s.title} | row {row_number}: Unmapped or missing instrument {instrument!r}; quantity={quantity!r}; side={side!r}')
-            yield dict(account=account,bank=bank,day=day,source=name,original=d,instrument=instrument,key=key,side=str(d['Side' if u else 'Stex Order Group']).upper(),quantity=float(d['Quantity (shares)' if u else 'Quantity']))
+            yield dict(source_row=row_number,account=account,bank=bank,day=day,source=name,original=d,instrument=instrument,key=key,side=str(d['Side' if u else 'Stex Order Group']).upper(),quantity=float(d['Quantity (shares)' if u else 'Quantity']))
 def main():
     p=argparse.ArgumentParser();p.add_argument('--orders',nargs='+',type=Path,required=True);p.add_argument('--history',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--as-of',required=True);p.add_argument('--archive-root',type=Path);p.add_argument('--archive',action='store_true');a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
     if a.archive and (not a.archive_root or not a.archive_root.is_dir()):
@@ -43,6 +43,11 @@ def main():
     from incremental import Cache, digest
     cache=Cache(Path('private')/'reconciliation.sqlite3') if a.archive else None
     current=cache.validate_workbooks(a.orders) if cache else {}
+    for o in orders:
+        o['order_id']=digest([o['source'].casefold(),o['account'],o['source_row']])[:24]
+    if cache:
+        orders=cache.retained_orders(orders,a.as_of)
+    closures=cache.closures() if cache else {}
     groups={}
     for o in orders:
         groups.setdefault(key(o),[]).append(o)
@@ -54,7 +59,7 @@ def main():
     for k,group in groups.items():
         group=sorted(group,key=lambda x:x['day'])
         group_trades=trade_groups.get(k,[])
-        fp=digest(['matching-v1',group,group_trades])
+        fp=digest(['matching-v2',group,group_trades,{o['order_id']:closures[o['order_id']] for o in group if o['order_id'] in closures}])
         cached=cache.get(k,fp) if cache else None
         if cached is not None:
             for o,result in zip(group,cached):
@@ -67,7 +72,7 @@ def main():
             siblings=[x for x in group if x is not o and key(x)==key(o)]
             later_dates=[x['day'] for x in siblings if x['day']>o['day']]
             next_day=min(later_dates) if later_dates else None
-            prior_open=any(x['day']<o['day'] and x.get('status')!='Fully Executed' for x in siblings)
+            prior_open=any(x['day']<o['day'] and x.get('status')!='Fully Executed' and not (x['order_id'] in closures and closures[x['order_id']][0]<o['day'] and not x.get('review')) for x in siblings)
             candidates=[(i,t) for i,t in enumerate(group_trades) if (t['Bank'],t['Account'],t['ISIN'],t['Buy/Sell'])==key(o) and o['day']<=str(t['Trade Date'])[:10]<=a.as_of and (next_day is None or str(t['Trade Date'])[:10]<next_day) and str(t['Reporting Date'])[:10]<=a.as_of and i not in used]
             total=sum(abs(float(t['Quantity'])) for i,t in candidates);o['matches']=[];o['review']=''
             if counts[(key(o),o['day'])]>1 or prior_open or total>o['quantity']:
@@ -79,15 +84,23 @@ def main():
         if cache:
             cache.put(k,fp,[{f:o[f] for f in ('matches','review','executed','status')} for o in group])
     print('INCREMENTAL | reused orders:',reused,'| recalculated orders:',recalculated)
+    for o in orders:
+        closure=closures.get(o['order_id'])
+        if closure and closure[0]<=a.as_of and o['status']!='Fully Executed' and not o['review']:
+            o['status']='Manually Closed'
+            o['review']='Closed '+closure[0]+(' — '+closure[1] if closure[1] else '')
+        if o['status'] not in ('Fully Executed','Manually Closed'):
+            print('OPEN',o['order_id'],o['day'],o['account'],o['bank'],o['instrument'],o['status'],o['quantity']-o['executed'])
     if cache:
         cache.save_workbooks(current)
+        cache.save_status(orders)
     def para(v):return Paragraph(escape('' if v is None else str(v)),styles['BodyText'])
     def table(rows,widths):
         t=Table([[para(v) for v in r] for r in rows],colWidths=widths,repeatRows=1);t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#dbe5ef')),('VALIGN',(0,0),(-1,-1),'TOP'),('GRID',(0,0),(-1,-1),.3,colors.lightgrey)]));return t
     styles['BodyText'].fontSize=7;styles['BodyText'].leading=9
     for day,account in sorted(set((o['day'],o['account']) for o in orders)):
         oo=[o for o in orders if o['account']==account and o['day']==day]
-        report_fp=digest(['report-v1',oo])
+        report_fp=digest(['report-v1',[{k:v for k,v in o.items() if k not in ('order_id','source_row')} for o in oo]])
         if cache:
             registered=cache.existing(day,account,report_fp)
             if registered:
@@ -100,7 +113,7 @@ def main():
                 if cache: cache.report(day,account,report_fp,existing)
                 print(day,account,'SKIP — existing archived report:',existing.name)
                 continue
-        if a.archive and any(o['status']!='Fully Executed' or o['review'] for o in oo):
+        if a.archive and any(o['status'] not in ('Fully Executed','Manually Closed') for o in oo):
             print(day,account,'DEFER — outstanding or ambiguous orders; use preview mode')
             continue
         story=[Paragraph('RM-204 | Trade Reconciliation — '+account,styles['Title']),Paragraph('Order date: '+day+' | Report cutoff: '+a.as_of+' | Generated: '+datetime.now().strftime('%d/%m/%Y %H:%M:%S'),styles['Normal']),Spacer(1,12),Paragraph('1. Original order instructions',styles['Heading2'])]
