@@ -44,7 +44,10 @@ def main():
     p.add_argument("--output", type=Path, default=Path("preview_reports"))
     p.add_argument("--list-only", action="store_true")
     p.add_argument("--archive-root", type=Path)
+    p.add_argument("--archive", action="store_true", help="Save completed reports to the compliance archive")
     a = p.parse_args()
+    if a.archive and not a.archive_root:
+        p.error("--archive requires --archive-root")
     if not a.orders_root.is_dir() or not a.history.is_file():
         p.error("Order folder or bank history is missing")
     files = discover(a.orders_root, a.as_of)
@@ -59,6 +62,8 @@ def main():
     if a.archive_root and not a.archive_root.is_dir():
         p.error("Compliance archive folder missing")
     extra = ["--archive-root", str(a.archive_root)] if a.archive_root else []
+    if a.archive:
+        extra.append("--archive")
     subprocess.run([sys.executable, str(Path(__file__).with_name("post_trade_reconcile.py")),
         "--orders", *map(str, files), "--history", str(a.history),
         "--as-of", a.as_of.isoformat(), "--output", str(a.output), *extra], check=True)
